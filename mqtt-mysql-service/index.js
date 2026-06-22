@@ -1,31 +1,11 @@
 require('dotenv').config();
 const mqtt = require('mqtt');
-const mysql = require('mysql2/promise');
+const db = require('./dashboard-iot/firebase');
 
-const LIMIAR = parseInt(process.env.LIMIAR_MQ135);
+const LIMIAR = parseInt(process.env.LIMIAR_MQ135) || 300;
+const ESTACAO_ID = 'CknXsRoUd81yyTOuU6zW'; // ID da estação no Firestore
 
-// Armazena as leituras temporariamente até ter todos os valores
 let leituraAtual = {};
-
-async function salvarLeitura(dados) {
-  const conn = await mysql.createConnection({
-    host: process.env.MYSQL_HOST,
-    user: process.env.MYSQL_USER,
-    password: process.env.MYSQL_PASSWORD,
-    database: process.env.MYSQL_DATABASE,
-  });
-
-  const alerta = dados.qualidade_ar > LIMIAR;
-
-  await conn.execute(
-    `INSERT INTO leituras (temperatura, umidade, qualidade_ar, alerta)
-     VALUES (?, ?, ?, ?)`,
-    [dados.temperatura, dados.umidade, dados.qualidade_ar, alerta]
-  );
-
-  await conn.end();
-  console.log(`Salvo: T=${dados.temperatura}, U=${dados.umidade}, MQ=${dados.qualidade_ar}, Alerta=${alerta}`);
-}
 
 const client = mqtt.connect(process.env.MQTT_BROKER);
 
@@ -43,9 +23,24 @@ client.on('message', async (topic, message) => {
   if (topic === 'phesp8266/umidade')     leituraAtual.umidade = valor;
   if (topic === 'phesp8266/mq135')       leituraAtual.qualidade_ar = valor;
 
-  // Salva quando tiver os 3 valores
   if (leituraAtual.temperatura && leituraAtual.umidade && leituraAtual.qualidade_ar) {
-    await salvarLeitura(leituraAtual);
-    leituraAtual = {}; // limpa para a próxima leitura
+    try {
+      const alerta = leituraAtual.qualidade_ar > LIMIAR;
+
+      await db.collection('leituras').add({
+        estacao_id: ESTACAO_ID,
+        temperatura: leituraAtual.temperatura,
+        umidade: leituraAtual.umidade,
+        qualidade_ar: leituraAtual.qualidade_ar,
+        alerta,
+        data_hora: new Date().toISOString(),
+      });
+
+      console.log(`Salvo: T=${leituraAtual.temperatura}, U=${leituraAtual.umidade}, MQ=${leituraAtual.qualidade_ar}, Alerta=${alerta}`);
+    } catch (err) {
+      console.error('Erro ao salvar no Firebase:', err);
+    }
+
+    leituraAtual = {};
   }
 });
